@@ -1,4 +1,9 @@
-# FreeVC: Towards High-Quality Text-Free One-Shot Voice Conversion
+# ExpressiveFreeVC: Towards High-Quality Text-Free One-Shot Voice Conversion
+
+This is an adaptation of original Free-VC to support pitch and energy conditioning, the main differences are:
+- Pitch conditioning
+- Energy conditioning
+- 22khz default sampling rate (with respectives params)
 
 [![arXiv](https://img.shields.io/badge/arXiv-Paper-<COLOR>.svg)](https://arxiv.org/abs/2210.15418)
 [![githubio](https://img.shields.io/static/v1?message=Audio%20Samples&logo=Github&labelColor=grey&color=blue&logoColor=white&label=%20&style=flat)](https://olawod.github.io/FreeVC-demo/)
