@@ -19,6 +19,9 @@ import utils
 from wavlm import WavLM, WavLMConfig
 
 def encode_dataset(args):
+
+    wav_list = []
+
     if(args.voice_encoder == 'softvc'):
         print(f"Loading SoftVC checkpoint")
         hmodel = torch.hub.load("bshall/hubert:main", f"hubert_soft").cuda().eval()
@@ -61,6 +64,9 @@ def encode_dataset(args):
             in_path = os.path.join(args.in_dir, in_path)
 
             w_path = out_path 
+
+            wav_list.append(w_path)
+
             wav, sr = librosa.load(in_path, sr=None)
             wav, _ = librosa.effects.trim(wav, top_db=20)
             peak = np.abs(wav).max()
@@ -150,9 +156,9 @@ def encode_dataset(args):
     val = []
     test = []
     wavs = []
-    for wav_file in tqdm(os.listdir(args.out_dir)):
-        if(wav_file[-3:] == 'wav'):
-            wavs.append(os.path.join(args.out_dir, wav_file))
+    for wav_file in tqdm(wav_list):
+        if(os.path.isfile(wav_file)):
+            wavs.append(wav_file)
 
     shuffle(wavs)
     train += wavs[2:-2]
