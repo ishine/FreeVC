@@ -13,6 +13,7 @@ from torch.nn import functional as F
 from commons import sequence_mask
 import hifigan
 from wavlm import WavLM, WavLMConfig
+import librosa
 
 MATPLOTLIB_FLAG = False
 
