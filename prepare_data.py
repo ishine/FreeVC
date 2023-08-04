@@ -163,9 +163,9 @@ def encode_dataset(args):
     shuffle(val)
     shuffle(test)
     
-    train_list = f'./dataset/train_list_{args.model}'
-    val_list = f'./dataset/val_list_{args.model}'
-    test_list = f'./dataset/test_list_{args.model}'
+    train_list = f'./filelists/train_list_{args.model}.txt'
+    val_list = f'./filelists/val_list_{args.model}.txt'
+    test_list = f'./filelists/test_list_{args.model}.txt'
 
     print("Writing", train_list)
     with open(train_list, "w") as f:
