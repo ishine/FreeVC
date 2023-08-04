@@ -213,14 +213,14 @@ class TextAudioSpeakerCollate():
         spec_padded, ids_slice = commons.rand_spec_segments(spec_padded, spec_lengths, spec_seglen)
         wav_padded = commons.slice_segments(wav_padded, ids_slice * self.hps.data.hop_length, wav_seglen)
         
-        print(c_padded.shape, f0_padded.shape)
+        # print(c_padded.shape, f0_padded.shape)
 
         c_padded = commons.slice_segments(c_padded, ids_slice, spec_seglen)[:,:,:-1]
 
 
-        f0_padded = commons.slice_segments(f0_padded, ids_slice, spec_seglen)[:,:,:-1]
-        uv_padded = commons.slice_segments(uv_padded, ids_slice, spec_seglen)[:,:,:-1]
-        energy_padded = commons.slice_segments(energy_padded, ids_slice, spec_seglen)[:,:,:-1]
+        f0_padded = commons.slice_segments(f0_padded, ids_slice, spec_seglen)[:,:-1]
+        uv_padded = commons.slice_segments(uv_padded, ids_slice, spec_seglen)[:,:-1]
+        energy_padded = commons.slice_segments(energy_padded, ids_slice, spec_seglen)[:,:-1]
     
         spec_padded = spec_padded[:,:,:-1]
         wav_padded = wav_padded[:,:,:-self.hps.data.hop_length]
