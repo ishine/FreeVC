@@ -8,6 +8,7 @@ import torch.utils.data
 import commons 
 from mel_processing import spectrogram_torch, spec_to_mel_torch
 from utils import load_wav_to_torch, load_filepaths_and_text, transform
+import utils
 #import h5py
 
 
@@ -70,7 +71,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
             spk = torch.from_numpy(np.load(spk_filename))
         
         if not self.use_sr:
-            c_filename = filename.replace(".wav", ".pt")
+            c_filename = filename + ".pt"
             c_filename = c_filename.replace("DUMMY", "dataset/wavlm")
             c = torch.load(c_filename).squeeze(0)
         else:
@@ -83,10 +84,24 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
                 c = torch.from_numpy(f[basename][()]).squeeze(0)
             #print(c)
             '''
-            c_filename = filename.replace(".wav", f"_{i}.pt")
+            c_filename = filename + f"_{i}.pt"
             c_filename = c_filename.replace("DUMMY", "dataset/sr/wavlm")
             c = torch.load(c_filename).squeeze(0)
             
+        
+        # check if necessary
+        c = utils.repeat_expand_2d(c, f0.shape[0])
+
+        f0 = np.load(filename + ".f0.npy")
+        f0, uv = utils.interpolate_f0(f0)
+        f0 = torch.FloatTensor(f0)
+        uv = torch.FloatTensor(uv)
+
+        # c = torch.load(filename+ ".soft.pt")
+        # c = utils.repeat_expand_2d(c.squeeze(0), f0.shape[0])
+
+        energy = np.load(filename + '.energy.npy')
+        energy = torch.FloatTensor(energy)    
         # 2023.01.10 update: code below can deteriorate model performance
         # I added these code during cleaning up, thinking that it can offer better performance than my provided checkpoints, but actually it does the opposite.
         # What an act of 'adding legs to a snake'!
@@ -107,9 +122,9 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         '''
         
         if self.use_spk:
-            return c, spec, audio_norm, spk
+            return c, spec, audio_norm, spk, f0, uv, energy
         else:
-            return c, spec, audio_norm
+            return c, spec, audio_norm, f0, uv, energy
 
     def __getitem__(self, index):
         return self.get_audio(self.audiopaths[index][0])
@@ -148,11 +163,17 @@ class TextAudioSpeakerCollate():
             spks = None
         
         c_padded = torch.FloatTensor(len(batch), batch[0][0].size(0), max_spec_len)
+        f0_padded = torch.FloatTensor(len(batch), max_spec_len)
+        uv_padded = torch.FloatTensor(len(batch), max_spec_len)
+        energy_padded = torch.FloatTensor(len(batch), max_spec_len)
         spec_padded = torch.FloatTensor(len(batch), batch[0][1].size(0), max_spec_len)
         wav_padded = torch.FloatTensor(len(batch), 1, max_wav_len)
         c_padded.zero_()
         spec_padded.zero_()
         wav_padded.zero_()
+        uv_padded.zero_()
+        energy_padded.zero_()
+        f0_padded.zero_()
         
         for i in range(len(ids_sorted_decreasing)):
             row = batch[ids_sorted_decreasing[i]]
@@ -170,6 +191,20 @@ class TextAudioSpeakerCollate():
             
             if self.use_spk:
                 spks[i] = row[3]
+
+                f0 = row[4]
+                f0_padded[i, :f0.size(0)] = f0
+                uv = row[5]
+                uv_padded[i, :uv.size(0)] = uv
+                energy = row[6]
+                energy_padded[i, :energy.size(0)] = energy
+            else:
+                f0 = row[3]
+                f0_padded[i, :f0.size(0)] = f0
+                uv = row[4]
+                uv_padded[i, :uv.size(0)] = uv
+                energy = row[5]
+                energy_padded[i, :energy.size(0)] = energy
         
         spec_seglen = spec_lengths[-1] if spec_lengths[-1] < self.hps.train.max_speclen + 1 else self.hps.train.max_speclen + 1
         wav_seglen = spec_seglen * self.hps.data.hop_length 
@@ -178,14 +213,19 @@ class TextAudioSpeakerCollate():
         wav_padded = commons.slice_segments(wav_padded, ids_slice * self.hps.data.hop_length, wav_seglen)
         
         c_padded = commons.slice_segments(c_padded, ids_slice, spec_seglen)[:,:,:-1]
+
+        f0_padded = commons.slice_segments(f0_padded, ids_slice, spec_seglen)[:,:,:-1]
+        uv_padded = commons.slice_segments(uv_padded, ids_slice, spec_seglen)[:,:,:-1]
+        energy_padded = commons.slice_segments(energy_padded, ids_slice, spec_seglen)[:,:,:-1]
     
         spec_padded = spec_padded[:,:,:-1]
         wav_padded = wav_padded[:,:,:-self.hps.data.hop_length]
 
         if self.use_spk:
-          return c_padded, spec_padded, wav_padded, spks
+          return c_padded, spec_padded, wav_padded, spks, f0_padded, uv_padded, energy_padded
         else:
-          return c_padded, spec_padded, wav_padded
+          return c_padded, spec_padded, wav_padded, f0_padded, uv_padded, energy_padded
+
 
 
 class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
@@ -215,7 +255,7 @@ class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
             if idx_bucket != -1:
                 buckets[idx_bucket].append(i)
   
-        for i in range(len(buckets) - 1, 0, -1):
+        for i in range(len(buckets) - 1, 0 -1, -1):
             if len(buckets[i]) == 0:
                 buckets.pop(i)
                 self.boundaries.pop(i+1)

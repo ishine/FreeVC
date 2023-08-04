@@ -12,7 +12,7 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import autocast, GradScaler
-
+import multiprocessing
 import commons
 import utils
 from data_utils import (
@@ -71,11 +71,12 @@ def run(rank, n_gpus, hps):
       rank=rank,
       shuffle=True)
   collate_fn = TextAudioSpeakerCollate(hps)
-  train_loader = DataLoader(train_dataset, num_workers=8, shuffle=False, pin_memory=True,
+  num_workers = 5 if multiprocessing.cpu_count() > 4 else multiprocessing.cpu_count()
+  train_loader = DataLoader(train_dataset, num_workers=num_workers, shuffle=False, pin_memory=True,
       collate_fn=collate_fn, batch_sampler=train_sampler)
   if rank == 0:
     eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files, hps)
-    eval_loader = DataLoader(eval_dataset, num_workers=8, shuffle=True,
+    eval_loader = DataLoader(eval_dataset, num_workers=num_workers, shuffle=True,
         batch_size=hps.train.batch_size, pin_memory=False,
         drop_last=False, collate_fn=collate_fn)
 
@@ -135,13 +136,18 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
   net_d.train()
   for batch_idx, items in enumerate(train_loader):
     if hps.model.use_spk:
-      c, spec, y, spk = items
+      c, spec, y, spk, f0, uv, energy = items
       g = spk.cuda(rank, non_blocking=True)
     else:
-      c, spec, y = items
+      c, spec, y, f0, uv, energy = items
       g = None
     spec, y = spec.cuda(rank, non_blocking=True), y.cuda(rank, non_blocking=True)
     c = c.cuda(rank, non_blocking=True)
+
+    f0 = f0.cuda(rank, non_blocking=True)
+    uv = uv.cuda(rank, non_blocking=True)
+    energy = energy.cuda(rank, non_blocking=True)
+
     mel = spec_to_mel_torch(
           spec, 
           hps.data.filter_length, 
@@ -152,8 +158,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     with autocast(enabled=hps.train.fp16_run):
       y_hat, ids_slice, z_mask,\
-      (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(c, spec, g=g, mel=mel)
-      
+      (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(c,f0, uv, energy, spec, g=None, mel=None) # None cuz we are single speaker
+
       y_mel = commons.slice_segments(mel, ids_slice, hps.train.segment_size // hps.data.hop_length)
       y_hat_mel = mel_spectrogram_torch(
           y_hat.squeeze(1), 
@@ -235,13 +241,18 @@ def evaluate(hps, generator, eval_loader, writer_eval):
     with torch.no_grad():
       for batch_idx, items in enumerate(eval_loader):
         if hps.model.use_spk:
-          c, spec, y, spk = items
+          c, spec, y, spk, f0, uv, energy = items
           g = spk[:1].cuda(0)
         else:
-          c, spec, y = items
+          c, spec, y, f0, uv, energy = items
           g = None
         spec, y = spec[:1].cuda(0), y[:1].cuda(0)
+        
         c = c[:1].cuda(0)
+        f0 = f0[:1].cuda(0)
+        uv = uv[:1].cuda(0)
+        energy = energy[:1].cuda(0)
+        
         break
       mel = spec_to_mel_torch(
         spec, 

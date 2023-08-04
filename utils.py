@@ -19,6 +19,278 @@ MATPLOTLIB_FLAG = False
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging
 
+f0_bin = 256
+f0_max = 1100.0
+f0_min = 50.0
+f0_mel_min = 1127 * np.log(1 + f0_min / 700)
+f0_mel_max = 1127 * np.log(1 + f0_max / 700)
+
+
+def normalize_f0(f0, x_mask, uv, random_scale=True):
+    # calculate means based on x_mask
+    uv_sum = torch.sum(uv, dim=1, keepdim=True)
+    uv_sum[uv_sum == 0] = 9999
+    means = torch.sum(f0[:, 0, :] * uv, dim=1, keepdim=True) / uv_sum
+
+    if random_scale:
+        factor = torch.Tensor(f0.shape[0], 1).uniform_(0.8, 1.2).to(f0.device)
+    else:
+        factor = torch.ones(f0.shape[0], 1).to(f0.device)
+    # normalize f0 based on means and factor
+    f0_norm = (f0 - means.unsqueeze(-1)) * factor.unsqueeze(-1)
+    if torch.isnan(f0_norm).any():
+        exit(0)
+    return f0_norm * x_mask
+
+
+def plot_data_to_numpy(x, y):
+    global MATPLOTLIB_FLAG
+    if not MATPLOTLIB_FLAG:
+        import matplotlib
+        matplotlib.use("Agg")
+        MATPLOTLIB_FLAG = True
+        mpl_logger = logging.getLogger('matplotlib')
+        mpl_logger.setLevel(logging.WARNING)
+    import matplotlib.pylab as plt
+    import numpy as np
+
+    fig, ax = plt.subplots(figsize=(10, 2))
+    plt.plot(x)
+    plt.plot(y)
+    plt.tight_layout()
+
+    fig.canvas.draw()
+    data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
+    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    plt.close()
+    return data
+
+
+
+def interpolate_f0(f0):
+    '''
+    对F0进行插值处理
+    '''
+
+    data = np.reshape(f0, (f0.size, 1))
+
+    vuv_vector = np.zeros((data.size, 1), dtype=np.float32)
+    vuv_vector[data > 0.0] = 1.0
+    vuv_vector[data <= 0.0] = 0.0
+
+    ip_data = data
+
+    frame_number = data.size
+    last_value = 0.0
+    for i in range(frame_number):
+        if data[i] <= 0.0:
+            j = i + 1
+            for j in range(i + 1, frame_number):
+                if data[j] > 0.0:
+                    break
+            if j < frame_number - 1:
+                if last_value > 0.0:
+                    step = (data[j] - data[i - 1]) / float(j - i)
+                    for k in range(i, j):
+                        ip_data[k] = data[i - 1] + step * (k - i + 1)
+                else:
+                    for k in range(i, j):
+                        ip_data[k] = data[j]
+            else:
+                for k in range(i, frame_number):
+                    ip_data[k] = last_value
+        else:
+            ip_data[i] = data[i]
+            last_value = data[i]
+
+    return ip_data[:,0], vuv_vector[:,0]
+
+
+def compute_f0_parselmouth(wav_numpy, p_len=None, sampling_rate=44100, hop_length=512,
+    voice_thresh = 0.6):
+    import parselmouth
+    x = wav_numpy
+    if p_len is None:
+        p_len = x.shape[0]//hop_length
+    else:
+        assert abs(p_len-x.shape[0]//hop_length) < 4, "pad length error"
+    time_step = hop_length / sampling_rate * 1000
+    f0_min = 50
+    f0_max = 1100
+    f0 = parselmouth.Sound(x, sampling_rate).to_pitch_ac(
+        time_step=time_step / 1000, voicing_threshold=voice_thresh,
+        pitch_floor=f0_min, pitch_ceiling=f0_max).selected_array['frequency']
+
+    pad_size=(p_len - len(f0) + 1) // 2
+    if(pad_size>0 or p_len - len(f0) - pad_size>0):
+        f0 = np.pad(f0,[[pad_size,p_len - len(f0) - pad_size]], mode='constant')
+    return f0
+
+def compute_f0_crepe(wav_numpy, p_len=None, sampling_rate=44100,
+        hop_length=512, voice_thresh = 0.3):
+    import crepe
+    x = wav_numpy
+    if p_len is None:
+        p_len = x.shape[0]//hop_length
+    else:
+        assert abs(p_len-x.shape[0]//hop_length) < 4, "pad length error"
+    time_step = hop_length / sampling_rate * 1000
+    _,f0,_,_ = crepe.predict(audio=x,sr=sampling_rate,
+        step_size=time_step,viterbi=True)
+
+    pad_size=(p_len - len(f0) + 1) // 2
+    if(pad_size>0 or p_len - len(f0) - pad_size>0):
+        f0 = np.pad(f0,[[pad_size,p_len - len(f0) - pad_size]], mode='constant')
+    
+    f0 = f0[:int(x.size / hop_length)]
+    #print(pad_size)
+    #print(p_len)
+    #print(x.shape)
+    #print(x.size / hop_length)
+    #print(f0.shape)
+
+    # Use parselmouth to determine voiced/unvoiced
+    parsel_mask = compute_f0_parselmouth_alt(wav_numpy, p_len, sampling_rate,
+        hop_length, voice_thresh)
+    f0[parsel_mask == 0] = 0
+
+    return f0
+
+def compute_f0_parselmouth_alt(wav_numpy, p_len=None, sampling_rate=44100,
+    hop_length=512, voice_thresh = 0.3):
+    import parselmouth
+    x = wav_numpy
+    if p_len is None:
+        p_len = x.shape[0]//hop_length
+    else:
+        assert abs(p_len-x.shape[0]//hop_length) < 4, "pad length error"
+    time_step = hop_length / sampling_rate * 1000
+    f0_min = 50
+    f0_max = 1100
+    f0 = parselmouth.Sound(x, sampling_rate).to_pitch_cc(
+        time_step=time_step / 1000, voicing_threshold=voice_thresh,
+        pitch_floor=75, pitch_ceiling=1100).selected_array['frequency']
+
+    pad_size=(p_len - len(f0) + 1) // 2
+    if(pad_size>0 or p_len - len(f0) - pad_size>0):
+        f0 = np.pad(f0,[[pad_size,p_len - len(f0) - pad_size]], mode='constant')
+    return f0
+
+def resize_f0(x, target_len):
+    source = np.array(x)
+    source[source<0.001] = np.nan
+    target = np.interp(np.arange(0, len(source)*target_len, len(source))/ target_len, np.arange(0, len(source)), source)
+    res = np.nan_to_num(target)
+    return res
+
+def compute_f0_dio(wav_numpy, p_len=None, sampling_rate=44100, hop_length=512):
+    import pyworld
+    if p_len is None:
+        p_len = wav_numpy.shape[0]//hop_length
+    f0, t = pyworld.dio(
+        wav_numpy.astype(np.double),
+        fs=sampling_rate,
+        f0_ceil=800,
+        frame_period=1000 * hop_length / sampling_rate,
+    )
+    f0 = pyworld.stonemask(wav_numpy.astype(np.double), f0, t, sampling_rate)
+    for index, pitch in enumerate(f0):
+        f0[index] = round(pitch, 1)
+    return resize_f0(f0, p_len)
+
+def compute_energy(wav_numpy, p_len=None, sampling_rate=44100, hop_length=512):
+    if p_len is None:
+        p_len = wav_numpy.shape[0]//hop_length
+    
+    x = librosa.stft(y=wav_numpy, hop_length = hop_length)
+    mag, _ = librosa.magphase(x)
+    energy = np.sqrt(np.sum(mag**2, axis=0))
+        
+    return resize_f0(energy, p_len)
+
+def compute_f0_harvest(
+        wav_numpy, p_len=None, sampling_rate=44100, hop_length=512):
+    import pyworld
+    if p_len is None:
+        p_len = wav_numpy.shape[0]//hop_length
+    f0, t = pyworld.harvest(
+        wav_numpy.astype(np.double),
+        fs=sampling_rate,
+        f0_ceil=800,
+        frame_period=1000 * hop_length / sampling_rate,
+    )
+    f0 = pyworld.stonemask(wav_numpy.astype(np.double), f0, t, sampling_rate)
+    for index, pitch in enumerate(f0):
+        f0[index] = round(pitch, 1)
+    return resize_f0(f0, p_len)
+
+def f0_to_coarse(f0):
+  is_torch = isinstance(f0, torch.Tensor)
+  f0_mel = 1127 * (1 + f0 / 700).log() if is_torch else 1127 * np.log(1 + f0 / 700)
+  f0_mel[f0_mel > 0] = (f0_mel[f0_mel > 0] - f0_mel_min) * (f0_bin - 2) / (f0_mel_max - f0_mel_min) + 1
+
+  f0_mel[f0_mel <= 1] = 1
+  f0_mel[f0_mel > f0_bin - 1] = f0_bin - 1
+  f0_coarse = (f0_mel + 0.5).long() if is_torch else np.rint(f0_mel).astype(np.int)
+  assert f0_coarse.max() <= 255 and f0_coarse.min() >= 1, (f0_coarse.max(), f0_coarse.min())
+  return f0_coarse
+
+energy_bin = 256
+# energy_min = 0
+# energy_max = 400
+
+def energy_to_coarse(energy, use_local_max = False, energy_max = 400, energy_min = 0):
+  is_torch = isinstance(energy, torch.Tensor)
+      
+  energy = energy.clone() if is_torch else energy.copy()
+  
+      
+  if use_local_max:
+      energy[energy > 0] = (energy[energy > 0] - energy_min) * (energy_bin - 2) / (energy.max() - energy_min) + 1
+  else:
+      energy[energy > 0] = (energy[energy > 0] - energy_min) * (energy_bin - 2) / (energy_max - energy_min) + 1
+
+  energy[energy <= 1] = 1
+  energy[energy > energy_bin - 1] = energy_bin - 1
+  energy_coarse = (energy + 0.5).long() if is_torch else np.rint(energy).astype(np.int)
+  assert energy_coarse.max() <= 255 and energy_coarse.min() >= 1, (energy_coarse.max(), energy_coarse.min())
+  return energy_coarse
+
+def get_hubert_model(quiet=False):
+  vec_path = "venc/checkpoint_best_legacy_500.pt"
+  if not quiet:
+      print("load model(s) from {}".format(vec_path))
+  from fairseq import checkpoint_utils
+  models, saved_cfg, task = checkpoint_utils.load_model_ensemble_and_task(
+    [vec_path],
+    suffix="",
+  )
+  model = models[0]
+  model.eval()
+  return model
+
+def get_hubert_content(hmodel, wav_16k_tensor,
+    legacy_final_proj : bool = False):
+  feats = wav_16k_tensor
+  if feats.dim() == 2:  # double channels
+    feats = feats.mean(-1)
+  assert feats.dim() == 1, feats.dim()
+  feats = feats.view(1, -1)
+  padding_mask = torch.BoolTensor(feats.shape).fill_(False)
+  inputs = {
+    "source": feats.to(wav_16k_tensor.device),
+    "padding_mask": padding_mask.to(wav_16k_tensor.device),
+  }
+  with torch.no_grad():
+    c = hmodel.extract_features(**inputs)[0]
+    if legacy_final_proj:
+        inputs["output_layer"] = 9
+        logger.warn("Using legacy_final_proj")
+        assert hasattr(hmodel, "final_proj")
+        assert isinstance(hmodel.final_proj, torch.nn.Module)
+        c = hmodel.final_proj(c)
+  return c.transpose(1, 2)
+
 
 def get_cmodel(rank):
     checkpoint = torch.load('wavlm/WavLM-Large.pt')
