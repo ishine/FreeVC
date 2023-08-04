@@ -143,7 +143,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
       g = None
     spec, y = spec.cuda(rank, non_blocking=True), y.cuda(rank, non_blocking=True)
 
-    print(spec.shape)
+    # print(spec.shape) # here is B, Len , D
 
     c = c.cuda(rank, non_blocking=True)
 
@@ -161,7 +161,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     with autocast(enabled=hps.train.fp16_run):
       y_hat, ids_slice, z_mask,\
-      (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(c,f0, uv, energy, spec, g=None, mel=None) # None cuz we are single speaker
+      (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(c,f0, uv, spec, energy, g=None, mel=None) # None cuz we are single speaker
 
       y_mel = commons.slice_segments(mel, ids_slice, hps.train.segment_size // hps.data.hop_length)
       y_hat_mel = mel_spectrogram_torch(
@@ -264,7 +264,8 @@ def evaluate(hps, generator, eval_loader, writer_eval):
         hps.data.sampling_rate,
         hps.data.mel_fmin, 
         hps.data.mel_fmax)
-      y_hat = generator.module.infer(c, g=g, mel=mel)
+      
+      y_hat = generator.module.infer(c, f0, uv, energy, g=None, mel=None)
       
       y_hat_mel = mel_spectrogram_torch(
         y_hat.squeeze(1).float(),

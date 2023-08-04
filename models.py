@@ -762,7 +762,7 @@ class SynthesizerTrn(nn.Module):
 
     # _, m_p, logs_p, _ = self.enc_p(c, c_lengths)
 
-    print(spec.shape, spec_lengths.shape)
+    # print(spec.shape, spec_lengths.shape)
     z, m_q, logs_q, spec_mask = self.enc_q(spec, spec_lengths, g=g) 
     z_p = self.flow(z, spec_mask, g=g)
 
