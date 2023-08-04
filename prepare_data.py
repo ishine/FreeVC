@@ -129,7 +129,7 @@ def encode_dataset(args):
                         wav, _ = librosa.load(w_path, sr=sampling_rate)
                         devive = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                         wav16k = librosa.resample(wav, orig_sr=sampling_rate, target_sr=16000)
-                        wav16k = torch.from_numpy(wav16k).to(devive)
+                        wav16k = torch.from_numpy(wav16k).to(devive).unsqueeze(0)
                         c = utils.get_content(hmodel, wav16k)
                         torch.save(c.cpu(), c_path)
                 else:
@@ -233,6 +233,6 @@ if __name__ == "__main__":
         help='whether use or not spectrogram augmentation')
     parser.add_argument("--min", type=int, default=68, help="min")
     parser.add_argument("--max", type=int, default=92, help="max")
-    
+
     args = parser.parse_args()
     encode_dataset(args)
