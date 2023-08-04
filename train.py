@@ -142,6 +142,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
       c, spec, y, f0, uv, energy = items
       g = None
     spec, y = spec.cuda(rank, non_blocking=True), y.cuda(rank, non_blocking=True)
+
+    print(spec.shape)
+
     c = c.cuda(rank, non_blocking=True)
 
     f0 = f0.cuda(rank, non_blocking=True)
