@@ -735,7 +735,7 @@ class SynthesizerTrn(nn.Module):
     self.enc_q = Encoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels) 
     self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
     
-    if not self.use_spk:
+    if self.use_spk:
       self.enc_spk = SpeakerEncoder(model_hidden_size=gin_channels, model_embedding_size=gin_channels)
 
     self.emb_uv = nn.Embedding(2, hidden_channels)
@@ -748,7 +748,7 @@ class SynthesizerTrn(nn.Module):
 
     x_mask = torch.unsqueeze(commons.sequence_mask(c_lengths, c.size(2)), 1).to(c.dtype)  
     
-    if not self.use_spk:
+    if self.use_spk:
       g = self.enc_spk(mel.transpose(1,2))
       g = g.unsqueeze(-1)
     
