@@ -797,6 +797,8 @@ class SynthesizerTrn(nn.Module):
             p_dropout,
             spk_channels=gin_channels
         )
+    else:
+        self.f0_decoder = None
 
     if(self.use_energy_decoder):
         self.energy_decoder = F0Decoder(
@@ -809,6 +811,8 @@ class SynthesizerTrn(nn.Module):
             p_dropout,
             spk_channels=gin_channels
         )
+    else:
+        self.energy_decoder = None
 
     if self.use_spk:
       self.enc_spk = SpeakerEncoder(model_hidden_size=gin_channels, model_embedding_size=gin_channels)
