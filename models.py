@@ -714,7 +714,7 @@ class SynthesizerTrn(nn.Module):
 
     self.use_f0_decoder = use_f0_decoder
     self.use_energy_decoder = use_energy_decoder
-    print(f'Using decoders: F0 Decoder = {self.use_f0_ecoder} Energy Decoder = {self.use_energy_ecoder}')
+    print(f'Using decoders: F0 Decoder = {self.use_f0_ecoder} Energy Decoder = {self.use_energy_decoder}')
 
 
     self.energy_max = energy_max
