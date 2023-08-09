@@ -840,6 +840,7 @@ class SynthesizerTrn(nn.Module):
         # f0 predict
         lf0 = 2595. * torch.log10(1. + f0.unsqueeze(1) / 700.) / 500
         norm_lf0 = utils.normalize_f0(lf0, x_mask, uv)
+        print(x.shape , lf0.shape)
         pred_lf0 = self.f0_decoder(x, norm_lf0, x_mask)
 
     lenergy = None 
