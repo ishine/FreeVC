@@ -16,6 +16,7 @@ import modules.commons as commons
 import modules.modules as modules
 # from modules.commons import init_weights, get_padding
 from utils import f0_to_coarse, energy_to_coarse
+import utils
 
 def padDiff(x):
     return F.pad(F.pad(x, (0,0,-1,1), 'constant', 0) - x, (0,0,0,-1), 'constant', 0)
@@ -630,6 +631,49 @@ class SpeakerEncoder(torch.nn.Module):
         return embed
 
 
+class F0Decoder(nn.Module):
+    def __init__(self,
+                 out_channels,
+                 hidden_channels,
+                 filter_channels,
+                 n_heads,
+                 n_layers,
+                 kernel_size,
+                 p_dropout,
+                 spk_channels=0):
+        super().__init__()
+        self.out_channels = out_channels
+        self.hidden_channels = hidden_channels
+        self.filter_channels = filter_channels
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.kernel_size = kernel_size
+        self.p_dropout = p_dropout
+        self.spk_channels = spk_channels
+
+        self.prenet = nn.Conv1d(hidden_channels, hidden_channels, 3, padding=1)
+        self.decoder = attentions.FFT(
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout)
+        self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
+        self.f0_prenet = nn.Conv1d(1, hidden_channels , 3, padding=1)
+        self.cond = nn.Conv1d(spk_channels, hidden_channels, 1)
+
+    def forward(self, x, norm_f0, x_mask, spk_emb=None):
+        x = torch.detach(x)
+        if (spk_emb is not None):
+            x = x + self.cond(spk_emb)
+        x += self.f0_prenet(norm_f0)
+        x = self.prenet(x) * x_mask
+        x = self.decoder(x * x_mask, x_mask)
+        x = self.proj(x) * x_mask
+        return x
+
+
 class SynthesizerTrn(nn.Module):
   """
   Synthesizer for Training
@@ -662,9 +706,14 @@ class SynthesizerTrn(nn.Module):
     use_energy = True,
     energy_type = 'linear',
     energy_max = 500,
+    use_f0_decoder = False,
+    use_energy_decoder = False,
     **kwargs):
 
     super().__init__()
+
+    self.use_f0_decoder = use_f0_decoder
+    self.use_energy_decoder = use_energy_decoder
 
     self.energy_max = energy_max
     self.use_energy = use_energy
@@ -735,6 +784,30 @@ class SynthesizerTrn(nn.Module):
     self.enc_q = Encoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels) 
     self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
     
+    if(self.use_f0_decoder):
+        self.f0_decoder = F0Decoder(
+            1,
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
+            spk_channels=gin_channels
+        )
+
+    if(self.use_energy_decoder):
+        self.energy_decoder = F0Decoder(
+            1,
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
+            spk_channels=gin_channels
+        )
+
     if self.use_spk:
       self.enc_spk = SpeakerEncoder(model_hidden_size=gin_channels, model_embedding_size=gin_channels)
 
@@ -754,6 +827,24 @@ class SynthesizerTrn(nn.Module):
     
     x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1,2)
 
+    lf0 = None 
+    norm_lf0 = None
+    pred_lf0 = None
+    if(self.use_f0_decoder):
+        # f0 predict
+        lf0 = 2595. * torch.log10(1. + f0.unsqueeze(1) / 700.) / 500
+        norm_lf0 = utils.normalize_f0(lf0, x_mask, uv)
+        pred_lf0 = self.f0_decoder(x, norm_lf0, x_mask)
+
+    lenergy = None 
+    norm_lenergy = None
+    pred_lenergy = None
+    if(self.use_energy_decoder):
+        # energy predict
+        lenergy = torch.log10(1+energy.unsqueeze(1)) 
+        norm_lenergy = utils.normalize_f0(lenergy, x_mask, uv)
+        pred_lenergy = self.f0_decoder(x, norm_lenergy, x_mask)
+
     # encoder
     if(self.use_energy):
         z_ptemp, m_p, logs_p, _ = self.enc_p(x, x_mask, f0=f0_to_coarse(f0), energy = energy_to_coarse(energy, self.use_local_max, energy_max = self.energy_max))
@@ -770,14 +861,14 @@ class SynthesizerTrn(nn.Module):
     z_slice, pitch_slice, energy_slice, ids_slice = commons.rand_slice_segments_with_pitch_and_energy(z, f0, energy, spec_lengths, self.segment_size)
     # print(z_slice.shape, pitch_slice.shape, energy_slice.shape, self.segment_size)
     if(self.energy_use_log):
-        energy_ = torch.log10(energy_slice) #default by apple paper https://arxiv.org/pdf/2009.06775.pdf
+        energy_ = 1+torch.log10(energy_slice) #default by apple paper https://arxiv.org/pdf/2009.06775.pdf
     
     if(self.energy_type == 'quantized'):
         energy_ = energy_to_coarse(energy_slice, self.use_local_max, energy_max = self.energy_max)
 
     o = self.dec(z_slice, g=g, f0=pitch_slice, energy = energy_)
     
-    return o, ids_slice, spec_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
+    return o, ids_slice, spec_mask, (z, z_p, m_p, logs_p, m_q, logs_q), pred_lf0, norm_lf0, lf0, pred_lenergy, norm_lenergy, lenergy
 
   def infer(self, c, f0, uv, energy = None, g=None, mel = None, noice_scale=0.35):
     c_lengths = (torch.ones(c.size(0)) * c.size(-1)).to(c.device)
@@ -792,7 +883,7 @@ class SynthesizerTrn(nn.Module):
     z = self.flow(z_p, c_mask, g=g, reverse=True)
 
     if(self.energy_use_log):
-        energy_ = torch.log10(energy) #default by apple paper https://arxiv.org/pdf/2009.06775.pdf
+        energy_ = 1+torch.log10(energy) #default by apple paper https://arxiv.org/pdf/2009.06775.pdf
     
     if(self.energy_type == 'quantized'):
         energy_ = energy_to_coarse(energy, self.use_local_max, energy_max = self.energy_max)

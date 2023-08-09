@@ -161,7 +161,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     with autocast(enabled=hps.train.fp16_run):
       y_hat, ids_slice, z_mask,\
-      (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(c,f0, uv, spec, energy, g=None, mel=None) # None cuz we are single speaker
+      (z, z_p, m_p, logs_p, m_q, logs_q), pred_lf0, norm_lf0, lf0, pred_lenergy, norm_lenergy, lenergy = net_g(c,f0, uv, spec, energy, g=None, mel=None) # None cuz we are single speaker
 
       y_mel = commons.slice_segments(mel, ids_slice, hps.train.segment_size // hps.data.hop_length)
       y_hat_mel = mel_spectrogram_torch(
@@ -196,6 +196,13 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         loss_fm = feature_loss(fmap_r, fmap_g)
         loss_gen, losses_gen = generator_loss(y_d_hat_g)
         loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl
+        if(pred_lf0 is not None):
+          loss_lf0 = F.mse_loss(pred_lf0, lf0)
+          loss_gen_all += loss_lf0
+        if(pred_lenergy is not None):
+          loss_lenergy = F.mse_loss(pred_lenergy, lenergy)
+          loss_gen_all += loss_lenergy
+
     optim_g.zero_grad()
     scaler.scale(loss_gen_all).backward()
     scaler.unscale_(optim_g)
