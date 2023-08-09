@@ -84,7 +84,8 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
                 c = torch.from_numpy(f[basename][()]).squeeze(0)
             #print(c)
             '''
-            c_filename = filename.replace(".wav", f"_{i}.wav") + f"_{i}.pt"
+            # c_filename = filename.replace(".wav", f"_{i}.wav") + f"_{i}.pt"
+            c_filename = filename + f"_{i}.pt"
             c_filename = c_filename.replace("DUMMY", "dataset/sr/wavlm")
             c = torch.load(c_filename).squeeze(0)
             
