@@ -345,30 +345,9 @@ class ProsodyEncoder_energy(nn.Module):
 class Generator(torch.nn.Module):
     def __init__(self, initial_channel, resblock, resblock_kernel_sizes, resblock_dilation_sizes, 
                  upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels,
-                sampling_rate, energy_agg_type, energy_linear_dim, use_energy):
+                sampling_rate):
         
         super(Generator, self).__init__()
-
-        self.use_energy_convs = False # default value
-        self.use_energy = use_energy
-        self.energy_linear_dim = energy_linear_dim
-
-        ## Energy args
-        if(self.use_energy):
-            if(energy_agg_type == 'one_step'):
-                self.energy_emb = nn.Embedding(256, upsample_initial_channel)
-            elif(energy_agg_type == 'all_step'):
-                self.energy_noise_convs = nn.ModuleList()
-                if(energy_linear_dim == 1):
-                    print('Using raw energy!')
-                    self.energy_emb = None
-                else:
-                    self.energy_emb = nn.Linear(1, energy_linear_dim)
-                self.use_energy_convs = True 
-            else:
-                print(f'''energy_agg_type = {energy_agg_type} does not exit.''')
-            ## End energy args
-
 
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
@@ -396,14 +375,9 @@ class Generator(torch.nn.Module):
                 self.noise_convs.append(Conv1d(
                     1, c_cur, kernel_size=stride_f0 * 2, stride=stride_f0, padding=stride_f0 // 2))
                 
-                if(self.use_energy):
-                    if(energy_agg_type == 'all_step'):
-                        self.energy_noise_convs.append(Conv1d(energy_linear_dim, c_cur, kernel_size=stride_f0 * 2, stride=stride_f0, padding=stride_f0 // 2))
             else:
                 self.noise_convs.append(Conv1d(1, c_cur, kernel_size=1))
-                if(self.use_energy):
-                    if(energy_agg_type == 'all_step'):
-                        self.energy_noise_convs.append(Conv1d(energy_linear_dim, c_cur, kernel_size=1))
+
 
 
         self.resblocks = nn.ModuleList()
@@ -418,24 +392,9 @@ class Generator(torch.nn.Module):
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
 
-    def forward(self, x, f0, energy, g=None):
-
-        if(self.use_energy):
-        # print(x.shape, f0.shape,energy.shape)
-            energy = torch.clamp(energy, min=0)
+    def forward(self, x, f0, g=None):
 
         f0 = self.f0_upsamp(f0[:, None]).transpose(1, 2)  # bs,L_upsampled,1
-
-        if(self.use_energy):
-            if(self.use_energy_convs):
-                if(self.energy_linear_dim == 1):
-                    energy = self.energy_upsamp(energy[:, None]) # bs,1, L_upsampled  
-                else:
-                    energy = self.energy_emb(energy.unsqueeze(-1)) # bs,L,linear_dim
-                    energy = self.energy_upsamp(energy.transpose(1, 2)) # bs, linear_dim, L_upsampled
-
-            else:
-                energy = self.energy_emb(energy)
 
 
         har_source, noi_source, uv = self.m_source(f0)
@@ -443,22 +402,10 @@ class Generator(torch.nn.Module):
 
         x = self.conv_pre(x)
 
-        if(self.use_energy):
-            if(self.use_energy_convs):
-                if g is not None:
-                    x = x + self.cond(g)      
-                else:
-                    x = x
-            else:
-                if g is not None:
-                    x = x + self.cond(g) + energy.transpose(1,2)  
-                else:
-                    x = x + energy.transpose(1,2)
+        if g is not None:
+            x = x + self.cond(g)      
         else:
-            if g is not None:
-                x = x + self.cond(g)      
-            else:
-                x = x
+            x = x
             # x = x + self.cond(g)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, modules.LRELU_SLOPE)
@@ -467,16 +414,7 @@ class Generator(torch.nn.Module):
 
             x_source = self.noise_convs[i](har_source)
 
-            if(self.use_energy):
-                if(self.use_energy_convs):
-                    x_energy = self.energy_noise_convs[i](energy)
-
-                    # print(x.shape, x_source.shape, x_energy.shape)
-                    x = x + x_source + x_energy
-                else:
-                    x = x + x_source
-            else:
-                x = x + x_source
+            x = x + x_source
 
             xs = None
             for j in range(self.num_kernels):
@@ -717,20 +655,9 @@ class SynthesizerTrn(nn.Module):
     print(f'Using decoders: F0 Decoder = {self.use_f0_decoder} Energy Decoder = {self.use_energy_decoder}')
 
 
-    self.energy_max = energy_max
     self.use_energy = use_energy
-    self.energy_type = energy_type
-    self.use_local_max = use_local_max
-    self.energy_use_log = energy_use_log
-    self.energy_agg_type = energy_agg_type
-    self.energy_linear_dim = energy_linear_dim
-    print(f'''Running energy embedding:
-          \tusing energy = {self.use_energy}
-          \tusing_local_max = {self.use_local_max}
-          \tenergy_agg_type = {self.energy_agg_type}
-          \tenergy_linear_dim = {self.energy_linear_dim}
-          \tenergy_type = {self.energy_type}''')
 
+    print("Model with energy? = ", self.use_energy)
 
     self.spec_channels = spec_channels
     self.inter_channels = inter_channels
@@ -756,32 +683,24 @@ class SynthesizerTrn(nn.Module):
     self.pre = nn.Conv1d(ssl_dim, hidden_channels, kernel_size=5, padding=2)
 
     if(self.use_energy):
-        self.enc_p = ProsodyEncoder_energy(
-            inter_channels,
-            hidden_channels,
-            filter_channels=filter_channels,
-            n_heads=n_heads,
-            n_layers=n_layers,
-            kernel_size=kernel_size,
-            p_dropout=p_dropout
-        )
+        self.energy_emb = nn.Linear(1, hidden_channels)
     else:
-        self.enc_p = ProsodyEncoder(
-        inter_channels,
-        hidden_channels,
-        filter_channels=filter_channels,
-        n_heads=n_heads,
-        n_layers=n_layers,
-        kernel_size=kernel_size,
-        p_dropout=p_dropout
+        self.energy_emb = None
+    
+    self.enc_p = ProsodyEncoder(
+    inter_channels,
+    hidden_channels,
+    filter_channels=filter_channels,
+    n_heads=n_heads,
+    n_layers=n_layers,
+    kernel_size=kernel_size,
+    p_dropout=p_dropout
     )
-
+        
 
     self.dec = Generator(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, 
                          upsample_rates, upsample_initial_channel, upsample_kernel_sizes, 
-                         gin_channels=gin_channels, sampling_rate = sampling_rate, 
-                         energy_agg_type=energy_agg_type,energy_linear_dim=energy_linear_dim, 
-                         use_energy = self.use_energy)
+                         gin_channels=gin_channels, sampling_rate = sampling_rate)
     
     self.enc_q = Encoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels) 
     self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
@@ -831,7 +750,12 @@ class SynthesizerTrn(nn.Module):
       g = self.enc_spk(mel.transpose(1,2))
       g = g.unsqueeze(-1)
     
-    x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1,2)
+    if(self.use_energy):
+        erg_emb = self.energy_emb(energy.unsqueeze(-1))
+        x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1,2) + erg_emb.transpose(1,2)
+    else:
+        erg_emb = False
+        x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1,2)
 
     lf0 = None 
     norm_lf0 = None
@@ -853,10 +777,7 @@ class SynthesizerTrn(nn.Module):
         pred_lenergy = self.f0_decoder(x, norm_lenergy, x_mask)
 
     # encoder
-    if(self.use_energy):
-        z_ptemp, m_p, logs_p, _ = self.enc_p(x, x_mask, f0=f0_to_coarse(f0), energy = energy_to_coarse(energy, self.use_local_max, energy_max = self.energy_max))
-    else:
-        z_ptemp, m_p, logs_p, _ = self.enc_p(x, x_mask, f0=f0_to_coarse(f0))
+    z_ptemp, m_p, logs_p, _ = self.enc_p(x, x_mask, f0=f0_to_coarse(f0))
 
     # _, m_p, logs_p, _ = self.enc_p(c, c_lengths)
 
@@ -867,13 +788,8 @@ class SynthesizerTrn(nn.Module):
     # print(z.shape, f0.shape, energy.shape, self.segment_size)
     z_slice, pitch_slice, energy_slice, ids_slice = commons.rand_slice_segments_with_pitch_and_energy(z, f0, energy, spec_lengths, self.segment_size)
     # print(z_slice.shape, pitch_slice.shape, energy_slice.shape, self.segment_size)
-    if(self.energy_use_log):
-        energy_ = 1+torch.log10(energy_slice) #default by apple paper https://arxiv.org/pdf/2009.06775.pdf
-    
-    if(self.energy_type == 'quantized'):
-        energy_ = energy_to_coarse(energy_slice, self.use_local_max, energy_max = self.energy_max)
 
-    o = self.dec(z_slice, g=g, f0=pitch_slice, energy = energy_)
+    o = self.dec(z_slice, g=g, f0=pitch_slice)
     
     return o, ids_slice, spec_mask, (z, z_p, m_p, logs_p, m_q, logs_q), pred_lf0, norm_lf0, lf0, pred_lenergy, norm_lenergy, lenergy
 
@@ -882,18 +798,10 @@ class SynthesizerTrn(nn.Module):
     x_mask = torch.unsqueeze(commons.sequence_mask(c_lengths, c.size(2)), 1).to(c.dtype)
     x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1,2)
 
-    if(self.use_energy):
-        z_p, m_p, logs_p, c_mask = self.enc_p(x, x_mask, f0=f0_to_coarse(f0), energy = energy_to_coarse(energy, self.use_local_max, energy_max = self.energy_max), noice_scale=noice_scale)
-    else:
-        z_p, m_p, logs_p, c_mask = self.enc_p(x, x_mask, f0=f0_to_coarse(f0), noice_scale=noice_scale)
+
+    z_p, m_p, logs_p, c_mask = self.enc_p(x, x_mask, f0=f0_to_coarse(f0), noice_scale=noice_scale)
 
     z = self.flow(z_p, c_mask, g=g, reverse=True)
-
-    if(self.energy_use_log):
-        energy_ = 1+torch.log10(energy) #default by apple paper https://arxiv.org/pdf/2009.06775.pdf
-    
-    if(self.energy_type == 'quantized'):
-        energy_ = energy_to_coarse(energy, self.use_local_max, energy_max = self.energy_max)
 
     # if not self.use_spk:
     #   g = self.enc_spk.embed_utterance(mel.transpose(1,2))
@@ -901,6 +809,6 @@ class SynthesizerTrn(nn.Module):
 
     # z_p, m_p, logs_p, c_mask = self.enc_p(c, c_lengths)
     # z = self.flow(z_p, c_mask, g=g, reverse=True)
-    o = self.dec(z * c_mask, g=g, f0=f0, energy=energy_)
+    o = self.dec(z * c_mask, g=g, f0=f0)
     
     return o
