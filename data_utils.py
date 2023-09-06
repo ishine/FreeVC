@@ -34,7 +34,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         random.seed(1234)
         random.shuffle(self.audiopaths)
 
-        print(self.audiopaths)
+        # print(self.audiopaths)
 
         self._filter()
 
