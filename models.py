@@ -355,8 +355,7 @@ class Generator(torch.nn.Module):
         resblock = modules.ResBlock1 if resblock == '1' else modules.ResBlock2
 
         self.f0_upsamp = torch.nn.Upsample(scale_factor=np.prod(upsample_rates))
-        if(self.use_energy):
-            self.energy_upsamp = torch.nn.Upsample(scale_factor=np.prod(upsample_rates))
+
         self.m_source = SourceModuleHnNSF(
             sampling_rate=sampling_rate,
             harmonic_num=8)
@@ -796,8 +795,13 @@ class SynthesizerTrn(nn.Module):
   def infer(self, c, f0, uv, energy = None, g=None, mel = None, noice_scale=0.35):
     c_lengths = (torch.ones(c.size(0)) * c.size(-1)).to(c.device)
     x_mask = torch.unsqueeze(commons.sequence_mask(c_lengths, c.size(2)), 1).to(c.dtype)
-    x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1,2)
 
+    if(self.use_energy):
+        erg_emb = self.energy_emb(energy.unsqueeze(-1))
+        x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1,2) + erg_emb.transpose(1,2)
+    else:
+        erg_emb = False
+        x = self.pre(c) * x_mask + self.emb_uv(uv.long()).transpose(1,2)
 
     z_p, m_p, logs_p, c_mask = self.enc_p(x, x_mask, f0=f0_to_coarse(f0), noice_scale=noice_scale)
 
