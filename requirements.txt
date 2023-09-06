@@ -27,3 +27,4 @@ torchvision==0.14.1
 torchaudio==0.13.1
 webrtcvad==2.0.10
 fairseq==0.12.2
+tensorboard==2.7.0
