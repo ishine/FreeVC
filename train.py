@@ -63,7 +63,7 @@ def run(rank, n_gpus, hps):
   torch.cuda.set_device(rank)
 
 
-  print(hps.data.training_files)
+  # print(hps.data.training_files)
 
   train_dataset = TextAudioSpeakerLoader(hps.data.training_files, hps)
   train_sampler = DistributedBucketSampler(
