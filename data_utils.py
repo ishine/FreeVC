@@ -33,6 +33,9 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
 
         random.seed(1234)
         random.shuffle(self.audiopaths)
+
+        print(self.audiopaths)
+
         self._filter()
 
     def _filter(self):
@@ -45,7 +48,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
 
         lengths = []
         for audiopath in self.audiopaths:
-            print(audiopath)
+        
             lengths.append(os.path.getsize(audiopath[0]) // (2 * self.hop_length))
         self.lengths = lengths
 
