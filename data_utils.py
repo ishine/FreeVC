@@ -45,6 +45,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
 
         lengths = []
         for audiopath in self.audiopaths:
+            print(audiopath)
             lengths.append(os.path.getsize(audiopath[0]) // (2 * self.hop_length))
         self.lengths = lengths
 
