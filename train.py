@@ -12,10 +12,14 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import autocast, GradScaler
-
+import multiprocessing
 import commons
 import utils
-from data_utils import TextAudioSpeakerLoader
+from data_utils import (
+  TextAudioSpeakerLoader,
+  TextAudioSpeakerCollate,
+  DistributedBucketSampler
+)
 from models import (
   SynthesizerTrn,
   MultiPeriodDiscriminator,
@@ -58,14 +62,26 @@ def run(rank, n_gpus, hps):
   torch.manual_seed(hps.train.seed)
   torch.cuda.set_device(rank)
 
+
+  # print(hps.data.training_files)
+
   train_dataset = TextAudioSpeakerLoader(hps.data.training_files, hps)
-  train_loader = DataLoader(train_dataset, num_workers=8, shuffle=False, pin_memory=True,
-      batch_size=hps.train.batch_size)
+  train_sampler = DistributedBucketSampler(
+      train_dataset,
+      hps.train.batch_size,
+      [32,300,400,500,600,700,800,900,1000],
+      num_replicas=n_gpus,
+      rank=rank,
+      shuffle=True)
+  collate_fn = TextAudioSpeakerCollate(hps)
+  num_workers = 5 if multiprocessing.cpu_count() > 4 else multiprocessing.cpu_count()
+  train_loader = DataLoader(train_dataset, num_workers=num_workers, shuffle=False, pin_memory=True,
+      collate_fn=collate_fn, batch_sampler=train_sampler)
   if rank == 0:
     eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files, hps)
-    eval_loader = DataLoader(eval_dataset, num_workers=8, shuffle=True,
+    eval_loader = DataLoader(eval_dataset, num_workers=num_workers, shuffle=True,
         batch_size=hps.train.batch_size, pin_memory=False,
-        drop_last=False)
+        drop_last=False, collate_fn=collate_fn)
 
   net_g = SynthesizerTrn(
       hps.data.filter_length // 2 + 1,
@@ -82,7 +98,7 @@ def run(rank, n_gpus, hps):
       hps.train.learning_rate, 
       betas=hps.train.betas, 
       eps=hps.train.eps)
-  net_g = DDP(net_g, device_ids=[rank])#, find_unused_parameters=True)
+  net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
   net_d = DDP(net_d, device_ids=[rank])
 
   try:
@@ -116,20 +132,28 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
   if writers is not None:
     writer, writer_eval = writers
 
-  #train_loader.batch_sampler.set_epoch(epoch)
+  train_loader.batch_sampler.set_epoch(epoch)
   global global_step
 
   net_g.train()
   net_d.train()
   for batch_idx, items in enumerate(train_loader):
     if hps.model.use_spk:
-      c, spec, y, spk = items
+      c, spec, y, spk, f0, uv, energy = items
       g = spk.cuda(rank, non_blocking=True)
     else:
-      c, spec, y = items
+      c, spec, y, f0, uv, energy = items
       g = None
     spec, y = spec.cuda(rank, non_blocking=True), y.cuda(rank, non_blocking=True)
+
+    # print(spec.shape) # here is B, Len , D
+
     c = c.cuda(rank, non_blocking=True)
+
+    f0 = f0.cuda(rank, non_blocking=True)
+    uv = uv.cuda(rank, non_blocking=True)
+    energy = energy.cuda(rank, non_blocking=True)
+
     mel = spec_to_mel_torch(
           spec, 
           hps.data.filter_length, 
@@ -140,8 +164,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     with autocast(enabled=hps.train.fp16_run):
       y_hat, ids_slice, z_mask,\
-      (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(c, spec, g=g, mel=mel)
-      
+      (z, z_p, m_p, logs_p, m_q, logs_q), pred_lf0, norm_lf0, lf0, pred_lenergy, norm_lenergy, lenergy = net_g(c,f0, uv, spec, energy, g=None, mel=None) # None cuz we are single speaker
+
       y_mel = commons.slice_segments(mel, ids_slice, hps.train.segment_size // hps.data.hop_length)
       y_hat_mel = mel_spectrogram_torch(
           y_hat.squeeze(1), 
@@ -175,6 +199,13 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         loss_fm = feature_loss(fmap_r, fmap_g)
         loss_gen, losses_gen = generator_loss(y_d_hat_g)
         loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl
+        if(pred_lf0 is not None):
+          loss_lf0 = F.mse_loss(pred_lf0, lf0)
+          loss_gen_all += loss_lf0
+        if(pred_lenergy is not None):
+          loss_lenergy = F.mse_loss(pred_lenergy, lenergy)
+          loss_gen_all += loss_lenergy
+
     optim_g.zero_grad()
     scaler.scale(loss_gen_all).backward()
     scaler.unscale_(optim_g)
@@ -223,13 +254,18 @@ def evaluate(hps, generator, eval_loader, writer_eval):
     with torch.no_grad():
       for batch_idx, items in enumerate(eval_loader):
         if hps.model.use_spk:
-          c, spec, y, spk = items
+          c, spec, y, spk, f0, uv, energy = items
           g = spk[:1].cuda(0)
         else:
-          c, spec, y = items
+          c, spec, y, f0, uv, energy = items
           g = None
         spec, y = spec[:1].cuda(0), y[:1].cuda(0)
+        
         c = c[:1].cuda(0)
+        f0 = f0[:1].cuda(0)
+        uv = uv[:1].cuda(0)
+        energy = energy[:1].cuda(0)
+        
         break
       mel = spec_to_mel_torch(
         spec, 
@@ -238,7 +274,8 @@ def evaluate(hps, generator, eval_loader, writer_eval):
         hps.data.sampling_rate,
         hps.data.mel_fmin, 
         hps.data.mel_fmax)
-      y_hat = generator.module.infer(c, g=g, mel=mel)
+      
+      y_hat = generator.module.infer(c, f0, uv, energy, g=None, mel=None)
       
       y_hat_mel = mel_spectrogram_torch(
         y_hat.squeeze(1).float(),
