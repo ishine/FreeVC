@@ -7,6 +7,8 @@
 
 In this [paper](https://arxiv.org/abs/2210.15418), we adopt the end-to-end framework of [VITS](https://arxiv.org/abs/2106.06103) for high-quality waveform reconstruction, and propose strategies for clean content information extraction without text annotation. We disentangle content information by imposing an information bottleneck to [WavLM](https://arxiv.org/abs/2110.13900) features, and propose the **spectrogram-resize** based data augmentation to improve the purity of extracted content information.
 
+[🤗 Play online at HuggingFace Spaces](https://huggingface.co/spaces/OlaWod/FreeVC).
+
 Visit our [demo page](https://olawod.github.io/FreeVC-demo) for audio samples.
 
 We also provide the [pretrained models](https://1drv.ms/u/s!AnvukVnlQ3ZTx1rjrOZ2abCwuBAh?e=UlhRR5).
@@ -21,6 +23,13 @@ We also provide the [pretrained models](https://1drv.ms/u/s!AnvukVnlQ3ZTx1rjrOZ2
     <th>(b) Inference</th>
   </tr>
 </table>
+
+## Updates
+
+- Code release. (Nov 27, 2022)
+- Online demo at HuggingFace Spaces. (Dec 14, 2022)
+- Supports 24kHz outputs. See [here](https://github.com/OlaWod/FreeVC/tree/main/tips-for-synthesizing-24KHz-wavs-from-16kHz-wavs/) for details. (Dec 15, 2022)
+- Fix data loading bug. (Jan 10, 2023)
 
 ## Pre-requisites
 
@@ -83,3 +92,10 @@ CUDA_VISIBLE_DEVICES=0 python train.py -c configs/freevc.json -m freevc
 # train freevc-s
 CUDA_VISIBLE_DEVICES=2 python train.py -c configs/freevc-s.json -m freevc-s
 ```
+
+## References
+
+- https://github.com/jaywalnut310/vits
+- https://github.com/microsoft/unilm/tree/master/wavlm
+- https://github.com/jik876/hifi-gan
+- https://github.com/liusongxiang/ppg-vc
